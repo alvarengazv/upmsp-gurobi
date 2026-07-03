@@ -113,12 +113,15 @@ def parse_dat_file(filepath):
 
     return data
 
-def resolver_gurobi_upmsp(data, a_weight):
+def resolver_gurobi_instancia_unica(data, a_weight=0.5):
     """
-    data: Dicionário contendo todos os dados da instância.
-    a_weight: O peso 'a' da Equação 15 (varia de 0 a 1).
+    Executa o modelo Gurobi para uma única instância e um único peso 'a'.
+    data: Dicionário contendo todos os dados da instância lidos do arquivo de texto.
+    a_weight: O peso 'a' da Equação 15. Padrão é 0.5 (peso igual para Tempo e Energia).
     """
-    # Desempacotando dados (conforme o formato do dataset [6])
+    print(f"Iniciando otimização com peso a = {a_weight}...")
+    
+    # Desempacotando dados (conforme o formato do dataset)
     N = range(data['n'])               # Conjunto de Tarefas (Jobs)
     M = range(data['m'])               # Conjunto de Máquinas
     L = range(data['o'])               # Modos de operação
@@ -138,27 +141,28 @@ def resolver_gurobi_upmsp(data, a_weight):
     rate_off = data['rate_off_peak']   # Tarifa de energia (fora de pico)
     
     max_cost = data['max_cost']        # Limite máximo de custo para normalização
-    sizeD = 24                         # Discretização do dia (ex: 24 se for em horas) [7]
+    sizeD = 24                         # Discretização do dia (ex: 24 se for em horas)
 
     # --- Criação do Modelo ---
-    model = gp.Model("UPMSP_Energy_Scheduling")
+    model = gp.Model("UPMSP_Energy_Scheduling_Single_Run")
     
-    # LIMITADOR DE TEMPO: 1 Hora (3600 segundos) conforme sua solicitação
+    # LIMITADOR DE TEMPO: 1 Hora (3600 segundos)
     model.setParam('TimeLimit', 3600)
     
-    # --- Variáveis de Decisão [1, 8] ---
-    # X_ijhl: 1 se tarefa j na maq i inicia no tempo h no modo l
+    # Opcional: Imprimir o log de progresso do Gurobi na tela
+    model.setParam('OutputFlag', 1) 
+    
+    # --- Variáveis de Decisão ---
     X = model.addVars(M, N, H, L, vtype=GRB.BINARY, name="X")
     
-    # Variáveis Contínuas (Eqs. 10, 11, 12) [3]
+    # Variáveis Contínuas 
     Cmax = model.addVar(vtype=GRB.CONTINUOUS, lb=0, name="Cmax")
     TEC = model.addVar(vtype=GRB.CONTINUOUS, lb=0, name="TEC")
     PECon = model.addVars(D, vtype=GRB.CONTINUOUS, lb=0, name="PECon")
     PECoff = model.addVars(D, vtype=GRB.CONTINUOUS, lb=0, name="PECoff")
 
     # --- Restrições ---
-
-    # Eq (3): Cada tarefa deve ser processada exatamente uma vez [1]
+    # Eq (3): Cada tarefa deve ser processada exatamente uma vez
     for j in N:
         model.addConstr(
             gp.quicksum(X[i, j, h, l] 
@@ -167,7 +171,7 @@ def resolver_gurobi_upmsp(data, a_weight):
             name=f"Exec_Job_{j}"
         )
 
-    # Eq (4): Restrição de capacidade, precedência e tempo de setup [1]
+    # Eq (4): Restrição de capacidade, precedência e tempo de setup
     for i in M:
         for j in N:
             for k in N:
@@ -186,7 +190,7 @@ def resolver_gurobi_upmsp(data, a_weight):
                                 name=f"Setup_{i}_{j}_{k}_{h}_{l}"
                             )
 
-    # Eq (5): Cálculo do Makespan (Cmax deve ser maior que o término da última tarefa) [1]
+    # Eq (5): Cálculo do Makespan
     for i in M:
         for j in N:
             for h in H:
@@ -197,7 +201,7 @@ def resolver_gurobi_upmsp(data, a_weight):
                         name=f"Cmax_def_{i}_{j}_{h}_{l}"
                     )
 
-    # Eq (6) e (7): Custos Parciais de Energia Pré-Calculados [1, 2]
+    # Eq (6) e (7): Custos Parciais de Energia
     for t in D:
         expr_on = gp.LinExpr()
         expr_off = gp.LinExpr()
@@ -212,11 +216,9 @@ def resolver_gurobi_upmsp(data, a_weight):
                     
                     for h in H:
                         job_end = h + p_ij
-                        # Calcula a interseção do tempo da tarefa com o horário de pico
                         overlap_on = max(0, min(job_end, pe) - max(h, ps))
                         overlap_off = p_ij - overlap_on
                         
-                        # Multiplicadores de custo da máquina e modo
                         fator_custo_base = lambd[l] * power[i] * (24 / sizeD)
                         
                         cost_on = overlap_on * fator_custo_base * rate_on
@@ -228,44 +230,36 @@ def resolver_gurobi_upmsp(data, a_weight):
         model.addConstr(PECon[t] >= expr_on, name=f"PECon_day_{t}")
         model.addConstr(PECoff[t] >= expr_off, name=f"PECoff_day_{t}")
 
-    # Eq (8): Custo Total de Energia [3]
+    # Eq (8): Custo Total de Energia
     model.addConstr(TEC >= gp.quicksum(PECon[t] + PECoff[t] for t in D), name="TEC_Total")
 
-    # --- Função Objetivo (Eq 15 - Soma Ponderada) [4] ---
+    # --- Função Objetivo Única (Eq 15 - Soma Ponderada) ---
     model.setObjective(
         (a_weight * (Cmax / H_len)) + ((1 - a_weight) * (TEC / max_cost)),
         GRB.MINIMIZE
     )
 
-    # --- Otimização ---
+    # --- Executa o Solver ---
     model.optimize()
 
-    # Retorno de resultados (se o modelo encontrou solução ótima ou viável)
-    if model.status == GRB.OPTIMAL or model.status == GRB.TIME_LIMIT:
+    # --- Verifica e Retorna Resultados ---
+    if model.status == GRB.OPTIMAL:
+        print("\nSolução ótima encontrada!")
+    elif model.status == GRB.TIME_LIMIT:
+        print("\nLimite de tempo atingido. Retornando a melhor solução viável encontrada até agora.")
+    elif model.status == GRB.INFEASIBLE:
+        print("\nO modelo é inviável.")
+        return None
+
+    if model.solCount > 0:
         return {
-            "a_weight": a_weight,
-            "Objective": model.objVal,
-            "Cmax": Cmax.X,
-            "TEC": TEC.X,
-            "Status": model.status
+            "Status": model.status,
+            "Funcao_Objetivo": model.objVal,
+            "Makespan_Final (Cmax)": Cmax.X,
+            "Custo_Energia_Final (TEC)": TEC.X
         }
     else:
-        return {"a_weight": a_weight, "Status": model.status}
-
-
-# --- Algoritmo 1: Simulador da Fronteira Pareto [5] ---
-def run_weighted_sum_method(dados_instancia):
-    pareto_front = []
-    
-    # Pesos definidos pelo artigo (0.0 até 1.0 com passo de 0.1) [5]
-    pesos_A = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-    
-    for a in pesos_A:
-        print(f"\nRodando modelo para o peso a = {a}...")
-        resultado = resolver_gurobi_upmsp(dados_instancia, a)
-        pareto_front.append(resultado)
-        
-    return pareto_front
+        return {"Status": "Sem solução no tempo limite."}
 
 
 # --- Bloco Principal ---
@@ -297,20 +291,16 @@ if __name__ == "__main__":
               f"o={dados['o']} modos, hl={dados['hl']} períodos")
 
         try:
-            # Executa a fronteira de Pareto via soma ponderada
-            resultados = run_weighted_sum_method(dados)
+            # Executa o solver para instância única com peso fixo
+            resultado = resolver_gurobi_instancia_unica(dados, a_weight=0.5)
 
             # Imprime resumo dos resultados
             print(f"\n--- Resultados para {nome} ---")
-            print(f"{'Peso a':>8} | {'Objetivo':>12} | {'Cmax':>10} | {'TEC':>12} | {'Status':>8}")
-            print("-" * 62)
-            for r in resultados:
-                if 'Objective' in r:
-                    print(f"{r['a_weight']:8.1f} | {r['Objective']:12.4f} | "
-                          f"{r['Cmax']:10.2f} | {r['TEC']:12.2f} | {r['Status']:>8}")
-                else:
-                    print(f"{r['a_weight']:8.1f} | {'N/A':>12} | "
-                          f"{'N/A':>10} | {'N/A':>12} | {r['Status']:>8}")
+            if resultado is not None:
+                for chave, valor in resultado.items():
+                    print(f"  {chave}: {valor}")
+            else:
+                print("  Nenhuma solução viável encontrada.")
         except gp.GurobiError as e:
             print(f"\n  ⚠ ERRO GUROBI para {nome}: {e}")
             print("  Pulando para a próxima instância...\n")
