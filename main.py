@@ -7,7 +7,7 @@ import glob
 
 def parse_dat_file(filepath):
     """
-    Lê um arquivo .dat do dataset e retorna um dicionário com todos os dados
+    Lê um arquivo .txt do dataset e retorna um dicionário com todos os dados
     da instância, no formato esperado por resolver_gurobi_upmsp().
     """
     with open(filepath, 'r') as f:
@@ -267,12 +267,12 @@ if __name__ == "__main__":
     # Diretório com os arquivos de dados
     set1_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "set1")
     dat_files = sorted(
-        glob.glob(os.path.join(set1_dir, "*.dat")),
+        glob.glob(os.path.join(set1_dir, "*.txt")),
         key=lambda f: int(os.path.basename(f).split("_")[0])  # Ordena por nº de jobs
     )
 
     if not dat_files:
-        print(f"Nenhum arquivo .dat encontrado em {set1_dir}")
+        print(f"Nenhum arquivo .txt encontrado em {set1_dir}")
         exit(1)
 
     print(f"Encontrados {len(dat_files)} arquivos de dados em set1/:\n")
@@ -306,4 +306,4 @@ if __name__ == "__main__":
             print("  Pulando para a próxima instância...\n")
             continue
         print()
-
+
